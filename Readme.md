@@ -1,368 +1,366 @@
-# Cryptographic Key Management System (KMS) with Mini-IAM
+# KMS-IAM
 
-## Project Overview
+A secure, lightweight **Key Management System (KMS)** combined with a role-based **Identity and Access Management (IAM)** service, built with FastAPI and Python.
 
-This project implements a **Cryptographic Key Management System** integrated with a **Mini Identity & Access Management (IAM)** service for a private cloud environment. It provides secure generation, storage, and usage of cryptographic keys with role-based access control.
+KMS-IAM demonstrates how authentication, authorization, key lifecycle management, and authenticated encryption can work together in a private-cloud-style environment.
 
-**Key concepts demonstrated:**
-- **Envelope encryption** (DEK wrapped by KEK)
-- **AES-256-GCM** authenticated encryption
-- **JWT authentication** with bcrypt password hashing
-- **RBAC** (admin, key_manager, key_user)
-- **Key rotation** and versioning
-- **REST API** with automatic OpenAPI documentation
+> **Security notice:** This project is intended for learning, prototyping, and controlled demonstrations. Before using it in production, conduct a security review and replace development defaults with managed secrets, hardened infrastructure, and an enterprise-grade key-protection solution.
 
----
+## Overview
+
+KMS-IAM provides a REST API for:
+
+- Registering and authenticating users
+- Protecting endpoints with JWT bearer tokens
+- Enforcing role-based access control (RBAC)
+- Generating and managing AES-256 encryption keys
+- Encrypting and decrypting data with AES-256-GCM
+- Applying envelope encryption to protect stored key material
+- Rotating keys manually or automatically
+- Recording security-sensitive activity in an audit trail
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     Client (curl / Swagger)                  │
-└─────────────────────────┬───────────────────────────────────┘
-                          │ HTTPS / HTTP
-┌─────────────────────────▼───────────────────────────────────┐
-│                    FastAPI (port 8000)                       │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ /auth/*      │  │ /keys/*      │  │ /docs        │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────────┐
-│                    Business Logic                            │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ IAM Manager  │  │ Key Manager  │  │ Crypto Core  │      │
-│  │ • Users      │  │ • Create     │  │ • AES-256    │      │
-│  │ • JWT        │  │ • Encrypt    │  │ • Envelope   │      │
-│  │ • Roles      │  │ • Decrypt    │  │ • Master Key │      │
-│  │ • Policies   │  │ • Rotate     │  │              │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────────┐
-│                    Storage Layer                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ SQLite DB    │  │ Master Key   │  │ Key Material │      │
-│  │ (metadata)   │  │ (file)       │  │ (encrypted)  │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└─────────────────────────────────────────────────────────────┘
+```text
+Client (curl / Swagger UI)
+          |
+          v
++------------------------------+
+| FastAPI REST API             |
+| /auth  /keys  /audit  /docs |
++---------------+--------------+
+                |
+                v
++------------------------------+
+| Application Services         |
+| IAM | RBAC | KMS | Crypto    |
+| Audit logging | Scheduler    |
++---------------+--------------+
+                |
+                v
++------------------------------+
+| Persistence                  |
+| SQLite/PostgreSQL            |
+| Encrypted key material      |
+| Protected master key file   |
++------------------------------+
 ```
 
----
+## Features
 
-## Features Implemented
+### Identity and access management
 
-### ✅ Identity & Access Management (IAM)
 - User registration with bcrypt password hashing
-- JWT-based authentication (HS256, 1-hour expiry)
-- Role management: `admin`, `key_manager`, `key_user`
-- Role assignment (admin only)
-- RBAC policy engine (who can perform which actions)
+- JWT authentication using bearer tokens
+- One-hour token expiration by default
+- Role-based permissions for `admin`, `key_manager`, and `key_user`
+- Admin-only role assignment
+- Pydantic request validation
 
-### ✅ Cryptographic Key Management (KMS)
-- **AES-256-GCM** key generation
-- Envelope encryption: Data Encryption Key (DEK) encrypted by Master Key (KEK)
-- Master key stored separately (simulated HSM)
-- Encrypt / decrypt operations using stored keys
-- Key rotation (new version created, old version disabled for encryption)
-- List keys (metadata only, no key material exposure)
+### Cryptographic key management
 
-### ✅ REST API
-- Automatic OpenAPI (Swagger) documentation at `/docs`
-- Bearer token authentication for protected endpoints
-- Input validation with Pydantic
+- AES-256-GCM authenticated encryption
+- Envelope encryption: data encryption keys (DEKs) are protected by a key-encryption key (KEK)
+- Key creation and versioning
+- Manual key rotation
+- Automatic rotation based on each key's `rotation_days` value
+- Metadata-only key listing; raw key material is never returned by the API
+- Encrypted key storage
 
-### ✅ Database
-- SQLite with SQLAlchemy ORM
-- Tables: users, roles, user_roles, keys
-- Keys stored as encrypted JSON blobs (envelope format)
+### Auditing and operations
 
----
+- Success and failure events for sensitive operations
+- Audit records containing timestamps, users, actions, resources, status, and source IPs
+- Admin-only audit log and statistics endpoints
+- Background scheduler that checks for expired keys every hour
+- Health-check endpoint
+- Automatic OpenAPI and Swagger UI documentation
 
 ## API Endpoints
 
 ### Authentication
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/auth/register` | Create new user account |
-| POST | `/auth/login` | Authenticate and receive JWT token |
-| POST | `/auth/assign-role` | Assign role to user (admin only) |
+| Method | Endpoint | Description | Access |
+| --- | --- | --- | --- |
+| `POST` | `/auth/register` | Create a user account | Public |
+| `POST` | `/auth/login` | Authenticate and receive a JWT | Public |
+| `POST` | `/auth/assign-role` | Assign a role to a user | Admin |
 
-### Key Management
+### Key management
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/keys/create` | Generate a new AES-256 key |
-| GET | `/keys/` | List all keys (metadata) |
-| POST | `/keys/encrypt` | Encrypt data with a specified key |
-| POST | `/keys/decrypt` | Decrypt data with a specified key |
-| POST | `/keys/{key_id}/rotate` | Rotate key (new version) |
+| Method | Endpoint | Description | Access |
+| --- | --- | --- | --- |
+| `POST` | `/keys/create` | Generate a new AES-256 key | Admin, key manager |
+| `GET` | `/keys/` | List key metadata | Authenticated users |
+| `POST` | `/keys/encrypt` | Encrypt data with a selected key | Authenticated users |
+| `POST` | `/keys/decrypt` | Decrypt data with a selected key | Authenticated users |
+| `POST` | `/keys/{key_id}/rotate` | Create a new key version | Admin, key manager |
 
-### Utility
+### Utility and auditing
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-| GET | `/` | API information |
-| GET | `/docs` | Swagger UI documentation |
+| Method | Endpoint | Description | Access |
+| --- | --- | --- | --- |
+| `GET` | `/` | API information | Public |
+| `GET` | `/health` | Service health check | Public |
+| `GET` | `/docs` | Interactive Swagger UI | Public |
+| `GET` | `/audit/logs` | View audit events | Admin |
+| `GET` | `/audit/stats` | View audit statistics | Admin |
 
----
+## Technology Stack
 
-## Installation & Setup
+- **Python 3.11+**
+- **FastAPI** and **Uvicorn**
+- **SQLAlchemy** ORM
+- **SQLite** for local development
+- **PostgreSQL** configuration support
+- **Cryptography** for AES-GCM operations
+- **bcrypt** for password hashing
+- **PyJWT** for token handling
+- **Pytest** and shell-based smoke tests
+
+## Installation
 
 ### Prerequisites
-- Python 3.11+
-- pip
 
-### Steps
+- Python 3.11 or later
+- `pip`
+- Bash and `jq` for the optional smoke test
+
+### 1. Clone the repository
 
 ```bash
-# Clone or download the project
-cd kms-iam
+git clone https://github.com/farah246/KMS_IAM.git
+cd KMS_IAM
+```
 
-# Create virtual environment
+### 2. Create and activate a virtual environment
+
+```bash
 python -m venv venv
-source venv/bin/activate   # On Windows: venv\Scripts\activate
 
-# Install dependencies
+# Linux/macOS/WSL
+source venv/bin/activate
+
+# Windows PowerShell
+.\venv\Scripts\Activate.ps1
+```
+
+### 3. Install dependencies
+
+If the repository contains `requirements.txt`:
+
+```bash
+pip install -r requirements.txt
+```
+
+Otherwise, install the runtime dependencies directly:
+
+```bash
 pip install fastapi uvicorn sqlalchemy cryptography bcrypt pyjwt python-dotenv
+```
 
-# Initialize database
+### 4. Configure the environment
+
+Copy the example environment file if one is provided:
+
+```bash
+cp .env.example .env
+```
+
+Review the values in `.env` before starting the service. Never commit real secrets, production JWT keys, database credentials, or master keys to source control.
+
+### 5. Initialize the database and roles
+
+```bash
 python scripts/init_db.py
-
-# Insert default roles
 python scripts/init_roles.py
+```
 
-# (Optional) Bootstrap admin user
-python -c "
-from app.database import SessionLocal
-from app.iam.manager import IAMManager
-db = SessionLocal()
-iam = IAMManager()
-iam.create_user(db, 'admin', 'AdminPass123!', 'admin@kms.local')
-iam.assign_role(db, 'admin', 'admin')
-iam.assign_role(db, 'admin', 'key_manager')
-print('Admin user created: admin / AdminPass123!')
-db.close()
-"
+### 6. Create an administrator
 
-# Start the API server
-python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+Use the project's bootstrap process or create an administrator through the supported IAM workflow. Do not use example passwords outside local development.
 
-Open http://localhost:8000/docs in your browser.
+### 7. Start the API
 
----
+```bash
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+The API will be available at:
+
+- Swagger UI: `http://localhost:8000/docs`
+- OpenAPI schema: `http://localhost:8000/openapi.json`
+- Health check: `http://localhost:8000/health`
 
 ## Usage Examples
 
-### 1. Register a new user
+### Register a user
 
 ```bash
-curl -X POST "http://localhost:8000/auth/register" \
+curl -X POST http://localhost:8000/auth/register \
   -H "Content-Type: application/json" \
   -d '{"username":"alice","password":"Alice123!","email":"alice@example.com"}'
 ```
 
-### 2. Login to get JWT token
+### Log in
 
 ```bash
-curl -X POST "http://localhost:8000/auth/login" \
+curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"alice","password":"Alice123!"}'
 ```
 
-Response:
+The response contains an access token:
+
 ```json
 {
-  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "access_token": "<jwt-token>",
   "token_type": "bearer",
   "expires_in": 3600
 }
 ```
 
-### 3. Create a cryptographic key
+Store the token for subsequent requests:
 
 ```bash
-curl -X POST "http://localhost:8000/keys/create" \
-  -H "Authorization: Bearer <your_token>" \
+export TOKEN="<jwt-token>"
+```
+
+### Create a key
+
+```bash
+curl -X POST http://localhost:8000/keys/create \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"db-encryption-key","allowed_ops":["encrypt","decrypt"],"rotation_days":90}'
+  -d '{"name":"application-key","allowed_ops":["encrypt","decrypt"],"rotation_days":90}'
 ```
 
-### 4. Encrypt data
+### Encrypt data
+
+The API accepts plaintext as Base64-encoded data. For example, `Hello World` is `SGVsbG8gV29ybGQ=`.
 
 ```bash
-# "Hello World" in base64
-PLAINTEXT_B64="SGVsbG8gV29ybGQ="
-
-curl -X POST "http://localhost:8000/keys/encrypt" \
-  -H "Authorization: Bearer <your_token>" \
+curl -X POST http://localhost:8000/keys/encrypt \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"key_id\":\"<key_id_from_step_3>\",\"plaintext_b64\":\"$PLAINTEXT_B64\"}"
+  -d '{"key_id":"<key-id>","plaintext_b64":"SGVsbG8gV29ybGQ="}'
 ```
 
-Response:
-```json
-{
-  "ciphertext_b64": "xK3...",
-  "iv_b64": "abc...",
-  "tag_b64": "def..."
-}
-```
-
-### 5. Decrypt data
+### Decrypt data
 
 ```bash
-curl -X POST "http://localhost:8000/keys/decrypt" \
-  -H "Authorization: Bearer <your_token>" \
+curl -X POST http://localhost:8000/keys/decrypt \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"key_id":"<key_id>","ciphertext_b64":"...","iv_b64":"...","tag_b64":"..."}'
+  -d '{"key_id":"<key-id>","ciphertext_b64":"<ciphertext>","iv_b64":"<iv>","tag_b64":"<tag>"}'
 ```
 
-### 6. List all keys
+### Rotate a key
 
 ```bash
-curl -X GET "http://localhost:8000/keys/" \
-  -H "Authorization: Bearer <your_token>"
+curl -X POST http://localhost:8000/keys/<key-id>/rotate \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-### 7. Rotate a key
+## Roles and permissions
 
-```bash
-curl -X POST "http://localhost:8000/keys/<key_id>/rotate" \
-  -H "Authorization: Bearer <your_token>"
+| Action | `admin` | `key_manager` | `key_user` |
+| --- | :---: | :---: | :---: |
+| Create keys | Yes | Yes | No |
+| Encrypt data | Yes | Yes | Yes |
+| Decrypt data | Yes | Yes | Yes |
+| Rotate keys | Yes | Yes | No |
+| List key metadata | Yes | Yes | Yes |
+| Assign roles | Yes | No | No |
+| View audit logs | Yes | No | No |
+
+## Security model
+
+| Area | Implementation |
+| --- | --- |
+| Password storage | bcrypt salted hashes |
+| Authentication | JWT bearer tokens with expiration |
+| Data encryption | AES-256-GCM authenticated encryption |
+| Key protection | Envelope encryption using a KEK and DEKs |
+| Key storage | Encrypted key material and metadata separation |
+| Master key | Local protected file for development; use an HSM/KMS in production |
+| Authorization | Role-based access control |
+| Auditing | Success and failure events for sensitive actions |
+
+### Production hardening checklist
+
+Before deploying outside a local environment:
+
+- Use a real secret-management system or HSM instead of a local master-key file.
+- Set a strong, randomly generated JWT signing secret.
+- Disable debug mode and avoid `--reload`.
+- Use HTTPS and restrict CORS origins.
+- Replace default credentials and rotate all development secrets.
+- Use PostgreSQL or another managed database for production workloads.
+- Apply network-level access controls and rate limits.
+- Review audit-log retention, access, and tamper-resistance requirements.
+- Add automated security scanning, dependency updates, and backup procedures.
+
+## Project structure
+
+```text
+KMS_IAM/
+├── app/
+│   ├── main.py                 # FastAPI application entry point
+│   ├── config.py               # Environment-based configuration
+│   ├── database.py             # SQLAlchemy setup
+│   ├── models/                 # Database models
+│   ├── iam/
+│   │   ├── manager.py          # Users, passwords, and JWT logic
+│   │   └── policy.py           # RBAC policies
+│   ├── kms/
+│   │   └── key_manager.py      # Key lifecycle operations
+│   ├── crypto/
+│   │   └── core.py             # AES-GCM and envelope encryption
+│   ├── api/                    # Authentication and key routes
+│   └── scheduler.py            # Automatic key rotation
+├── scripts/
+│   ├── init_db.py              # Initialize database tables
+│   ├── init_roles.py           # Create default roles
+│   └── smoke_api_bootstrap.sh  # End-to-end API smoke test
+├── data/                       # Local runtime data; do not commit secrets
+├── requirements.txt
+└── Readme.md
 ```
 
----
-## Smoke test (E2E API)
+## Testing
 
-Prereqs:
-- API running on http://localhost:8000
-- WSL/bash
-- jq installed
+Run the Python test suite, if present:
 
-Run:
 ```bash
-cd /mnt/c/Users/farah/KMS_IAM
-source venv/bin/activate
+pytest
+```
+
+Run the API smoke test while the server is running:
+
+```bash
 chmod +x scripts/smoke_api_bootstrap.sh
 BASE_URL="http://localhost:8000" ./scripts/smoke_api_bootstrap.sh
 ```
 
-## Security Model
+## Automatic key rotation
 
-| Component | Implementation |
-|-----------|----------------|
-| **Password storage** | bcrypt (salt + hash) |
-| **Authentication** | JWT (HS256, 1-hour expiry) |
-| **Data encryption** | AES-256-GCM (authenticated) |
-| **Key protection** | Envelope encryption (DEK wrapped by KEK) |
-| **Master key** | Stored in a file with 0o600 permissions |
-| **Database** | Keys stored as encrypted blobs (never plaintext) |
-| **Access control** | RBAC (admin, key_manager, key_user) |
+The background scheduler checks for expired keys every hour. It rotates keys whose configured `rotation_days` threshold has been exceeded and records the action in the audit trail.
 
-### Role Permissions
+For a manual local check:
 
-| Action | admin | key_manager | key_user |
-|--------|-------|-------------|----------|
-| Create keys | ✅ | ✅ | ❌ |
-| Encrypt data | ✅ | ✅ | ✅ |
-| Decrypt data | ✅ | ✅ | ✅ |
-| Rotate keys | ✅ | ✅ | ❌ |
-| List keys | ✅ | ✅ | ✅ |
-| Assign roles | ✅ | ❌ | ❌ |
-
----
-
-## Project Structure
-
-```
-kms-iam/
-├── app/
-│   ├── __init__.py
-│   ├── main.py              # FastAPI entry point
-│   ├── config.py            # Settings from .env
-│   ├── database.py          # SQLAlchemy setup
-│   ├── models/
-│   │   ├── user.py
-│   │   ├── role.py
-│   │   └── key.py
-│   ├── iam/
-│   │   ├── manager.py       # User & JWT logic
-│   │   └── policy.py        # RBAC rules
-│   ├── kms/
-│   │   └── key_manager.py   # Key lifecycle
-│   ├── crypto/
-│   │   └── core.py          # AES & envelope encryption
-│   └── api/
-│       ├── auth.py          # /auth endpoints
-│       └── keys.py          # /keys endpoints
-├── scripts/
-│   ├── init_db.py           # Create tables
-│   └── init_roles.py        # Insert default roles
-├── data/                    # Persistent data (SQLite, master.key)
-├── .env                     # Configuration
-└── requirements.txt
+```bash
+PYTHONPATH=. python -c "from app.scheduler import auto_rotate_expired_keys; auto_rotate_expired_keys()"
 ```
 
----
+## Contributing
 
-## Default Test Credentials
-
-After bootstrapping (see Setup section), you can use:
-
-| Username | Password | Roles |
-|----------|----------|-------|
-| admin | AdminPass123! | admin, key_manager |
-| alice | Alice123! | *(assign role via admin)* |
-
----
-
-## Future Improvements (Optional)
-
-- ✅ Audit logging (track every operation)
-- ✅ Key auto-rotation based on expiration
-- ✅ Rate limiting
-- ✅ Prometheus metrics
-- ✅ CLI tool
-- ✅ PostgreSQL support
-
----
+1. Create a feature branch.
+2. Make focused changes with tests where appropriate.
+3. Run the test suite and smoke tests.
+4. Update the README or API documentation when behavior changes.
+5. Open a pull request describing the change and its security implications.
 
 ## License
 
-This project is for educational purposes as part of a cryptography course.
-
----
-
-## Recent Improvements
-
-### ✅ Audit Logging on Success Paths
-All sensitive operations now log **both failures and successes** to the audit trail:
-- `LOGIN` / `LOGIN_FAIL`
-- `KEY_CREATE`, `KEY_ENCRYPT`, `KEY_DECRYPT`, `KEY_ROTATE`
-- `ROLE_ASSIGN`
-
-Each entry includes timestamp, user ID, action, resource, success status, and source IP.
-
-View logs (admin only):
-```bash
-GET /audit/logs
-GET /audit/stats
-```
-
-### ✅ Key Auto-Rotation Scheduler
-A background scheduler starts automatically with the server and rotates any key that has exceeded its `rotation_days` threshold — no manual intervention needed.
-
-- Runs every hour
-- Logs every rotation to the audit trail as `system-scheduler`
-- Confirmation on startup: `[scheduler] Auto-rotation scheduler started — runs every hour`
-
-To test manually:
-```bash
-PYTHONPATH=. python3 -c "
-from app.scheduler import auto_rotate_expired_keys
-auto_rotate_expired_keys()
-"
-```
+This project is provided for educational and demonstration purposes. Add an explicit license file if you intend to distribute or reuse the project.
